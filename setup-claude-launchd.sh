@@ -118,7 +118,6 @@ install_launchd() {
 
     launchctl bootout "$LAUNCHD_DOMAIN" "$PLIST_PATH" >/dev/null 2>&1 || true
     launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST_PATH"
-    launchctl kickstart -k "$LAUNCHD_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 
     echo "✅ launchd auto-start installed"
     echo "Plist: $PLIST_PATH"
