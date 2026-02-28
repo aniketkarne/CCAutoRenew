@@ -51,6 +51,9 @@ chmod +x *.sh
 # Interactive setup (recommended)
 ./setup-claude-cron.sh
 
+# macOS auto-start on login (launchd)
+./setup-claude-launchd.sh install
+
 # OR manual daemon start
 ./claude-daemon-manager.sh start
 ./claude-daemon-manager.sh start --at "09:00"  # with start time
@@ -150,6 +153,30 @@ chmod +x *.sh
 ./claude-daemon-manager.sh restart --at "10:00"  # new start time
 ./claude-daemon-manager.sh restart --at "09:00" --stop "17:00"  # new schedule
 ```
+
+### macOS Auto-Start With launchd
+
+For macOS users who want the daemon to start automatically at login:
+
+```bash
+# Install auto-start using your current shell PATH
+./setup-claude-launchd.sh install
+
+# Install auto-start with daemon start arguments
+./setup-claude-launchd.sh install -- --at "09:00" --stop "17:00"
+./setup-claude-launchd.sh install -- --disableccusage
+
+# Check launchd + daemon status
+./setup-claude-launchd.sh status
+
+# Remove auto-start
+./setup-claude-launchd.sh uninstall
+```
+
+Notes:
+- The launch agent triggers `./claude-daemon-manager.sh start` when you log in.
+- It uses the current shell `PATH` when generating the plist, so `claude`, `ccusage`, `npx`, or `bunx` can still be found by launchd.
+- If you move those commands to a different location later, run the install command again to refresh the LaunchAgent.
 
 ### Live Dashboard 📊
 
@@ -398,7 +425,9 @@ CCAutoRenew/
 ├── claude-auto-renew-daemon.sh   # Core daemon process
 ├── claude-auto-renew-advanced.sh # Standalone renewal script
 ├── claude-auto-renew.sh          # Basic renewal script
+├── claude-launchd-bootstrap.sh   # launchd helper to start the daemon once per login
 ├── setup-claude-cron.sh          # Interactive setup (daemon/cron)
+├── setup-claude-launchd.sh       # macOS launchd auto-start installer
 ├── stop-daemon.sh                # Graceful daemon shutdown
 ├── test-claude-renewal.sh        # Legacy comprehensive test suite
 ├── test-message-feature.sh       # Custom message feature tests
@@ -503,6 +532,18 @@ cat ~/.claude-auto-renew-days
 # Should print the canonical form, e.g. "mon,tue,wed,thu,fri".
 # If it prints your raw input ("weekdays", "mon, Wed ,fri"), you're
 # running an older manager — pull latest and reinstall.
+```
+
+### launchd auto-start not working (macOS)
+```bash
+# Check launchd + daemon status
+./setup-claude-launchd.sh status
+
+# Reinstall the LaunchAgent using your current shell PATH
+./setup-claude-launchd.sh install
+
+# Check launchd bootstrap logs
+tail -20 ~/.claude-auto-renew-launchd.err.log
 ```
 
 ### ccusage not working
