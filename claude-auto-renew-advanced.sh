@@ -141,7 +141,8 @@ EOF
         local result=$?
     else
         # Fallback to simple echo with macOS-compatible timeout
-        (echo "hi" | claude >> "$LOG_FILE" 2>&1) &
+        # Unset CLAUDECODE to allow renewal from within an existing Claude session
+        (unset CLAUDECODE; echo "hi" | claude >> "$LOG_FILE" 2>&1) &
         local pid=$!
         
         # Wait up to 10 seconds

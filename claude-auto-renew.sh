@@ -79,7 +79,8 @@ start_claude_session() {
     fi
     
     # Start claude with a simple command that exits immediately
-    echo "hi" | claude 2>&1 >> "$LOG_FILE"
+    # Unset CLAUDECODE to allow renewal from within an existing Claude session
+    (unset CLAUDECODE; echo "hi" | claude 2>&1 >> "$LOG_FILE")
     
     if [ $? -eq 0 ]; then
         log_message "Successfully started Claude session"

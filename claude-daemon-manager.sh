@@ -9,6 +9,10 @@ START_TIME_FILE="$HOME/.claude-auto-renew-start-time"
 STOP_TIME_FILE="$HOME/.claude-auto-renew-stop-time"
 MESSAGE_FILE="$HOME/.claude-auto-renew-message"
 
+# Load shared library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/ccusage-utils.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -31,9 +35,8 @@ start_daemon() {
     # Parse --at and --stop parameters
     START_TIME=""
     STOP_TIME=""
-    DISABLE_CCUSAGE=false
     CUSTOM_MESSAGE=""
-    
+
     # Parse parameters
     while [[ $# -gt 1 ]]; do
         case $2 in
@@ -44,10 +47,6 @@ start_daemon() {
             --stop)
                 STOP_TIME="$3"
                 shift 2
-                ;;
-            --disableccusage)
-                DISABLE_CCUSAGE=true
-                shift
                 ;;
             --message)
                 CUSTOM_MESSAGE="$3"
@@ -132,11 +131,8 @@ start_daemon() {
     fi
     
     print_status "Starting Claude auto-renewal daemon..."
-    if [ "$DISABLE_CCUSAGE" = true ]; then
-        nohup "$DAEMON_SCRIPT" --disableccusage > /dev/null 2>&1 &
-    else
-        nohup "$DAEMON_SCRIPT" > /dev/null 2>&1 &
-    fi
+    touch "$HOME/.claude-auto-renew-renew-on-start"
+    nohup "$DAEMON_SCRIPT" > /dev/null 2>&1 &
     
     sleep 2
     
@@ -249,29 +245,30 @@ get_daemon_status() {
     fi
 }
 
-# Get next renewal estimate
+# Get next renewal estimate from daemon state file
 get_next_renewal_estimate() {
     get_daemon_timing_info
-    
+
     NEXT_RENEWAL_TIME=""
     NEXT_RENEWAL_REMAINING=""
-    
-    # Only show if active or no scheduling
-    if [ ! -f "$START_TIME_FILE" ] || [ "$CURRENT_EPOCH" -ge "$(cat "$START_TIME_FILE" 2>/dev/null || echo 0)" ]; then
-        if [ -f "$HOME/.claude-last-activity" ]; then
-            last_activity=$(cat "$HOME/.claude-last-activity")
-            time_diff=$((CURRENT_EPOCH - last_activity))
-            remaining=$((18000 - time_diff))
-            
-            if [ $remaining -gt 0 ]; then
-                hours=$((remaining / 3600))
-                minutes=$(((remaining % 3600) / 60))
-                NEXT_RENEWAL_REMAINING="${hours}h ${minutes}m"
-                next_renewal_time=$((CURRENT_EPOCH + remaining))
-                NEXT_RENEWAL_TIME=$(date -d "@$next_renewal_time" '+%H:%M' 2>/dev/null || date -r "$next_renewal_time" '+%H:%M')
-            fi
-        fi
+
+    read_state_file
+    if [ -z "$BLOCK_END_EPOCH" ]; then
+        return
     fi
+
+    local remaining_secs=$(( BLOCK_END_EPOCH - CURRENT_EPOCH ))
+    if [ "$remaining_secs" -le 0 ]; then
+        return
+    fi
+
+    local hours=$((remaining_secs / 3600))
+    local minutes=$(((remaining_secs % 3600) / 60))
+    NEXT_RENEWAL_REMAINING="${hours}h ${minutes}m"
+
+    # Renewal fires 5 min past block end (blocks expire at the top of the hour)
+    local next_renewal_epoch=$(( BLOCK_END_EPOCH + 300 ))
+    NEXT_RENEWAL_TIME=$(date -d "@$next_renewal_epoch" '+%H:%M' 2>/dev/null || date -r "$next_renewal_epoch" '+%H:%M')
 }
 
 # Generate day plan with estimated renewal times
@@ -302,36 +299,27 @@ generate_day_plan() {
         active_end=$(date -d "$current_date $stop_time_today" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$current_date $stop_time_today" +%s 2>/dev/null)
     fi
     
-    # If we have last activity, calculate potential renewal times
-    if [ -f "$HOME/.claude-last-activity" ]; then
-        last_activity=$(cat "$HOME/.claude-last-activity")
-        
-        # Calculate the first potential renewal after last activity
-        first_renewal=$((last_activity + 18000))  # 5 hours after last activity
-        
-        # Generate renewal times throughout the day
+    # Use state file for renewal schedule (written by daemon, no ccusage call needed)
+    read_state_file
+
+    if [ -n "$BLOCK_END_EPOCH" ]; then
+        # First renewal is 5 min past block end (blocks expire at top of hour)
+        local first_renewal=$(( BLOCK_END_EPOCH + 300 ))
+
         current_renewal=$first_renewal
+        local is_first_renewal=true
         while [ $current_renewal -lt $day_end_epoch ]; do
-            # Check if this renewal time is within active hours
             if [ $current_renewal -ge $active_start ] && [ $current_renewal -le $active_end ]; then
                 renewal_time_str=$(date -d "@$current_renewal" '+%H:%M' 2>/dev/null || date -r "$current_renewal" '+%H:%M')
-                
-                # Mark if this is the next upcoming renewal
-                if [ $current_renewal -gt $CURRENT_EPOCH ]; then
-                    if [ ${#DAY_PLAN[@]} -eq 0 ]; then
-                        # This is the next renewal
-                        DAY_PLAN+=("$renewal_time_str (NEXT)")
-                    else
-                        DAY_PLAN+=("$renewal_time_str")
-                    fi
-                elif [ $current_renewal -le $CURRENT_EPOCH ] && [ $((CURRENT_EPOCH - current_renewal)) -lt 3600 ]; then
-                    # Recent renewal (within last hour)
-                    DAY_PLAN+=("$renewal_time_str (RECENT)")
+
+                if [ "$is_first_renewal" = true ]; then
+                    DAY_PLAN+=("$renewal_time_str (NEXT)")
+                    is_first_renewal=false
                 else
                     DAY_PLAN+=("$renewal_time_str")
                 fi
             fi
-            
+
             # Next renewal is 5 hours later
             current_renewal=$((current_renewal + 18000))
         done
@@ -458,27 +446,19 @@ dash_daemon() {
         fi
         echo ""
         
-        # Show progress bar for next renewal
+        # Show progress bar for next renewal (reads state file, no ccusage call)
         get_next_renewal_estimate
+        echo "⏱️  TIME TO NEXT RESET:"
         if [ -n "$NEXT_RENEWAL_REMAINING" ]; then
-            echo "⏱️  TIME TO NEXT RESET:"
-            # Calculate progress (5 hours = 18000 seconds total)
-            if [ -f "$HOME/.claude-last-activity" ]; then
-                last_activity=$(cat "$HOME/.claude-last-activity")
-                current_time=$(date +%s)
-                time_diff=$((current_time - last_activity))
-                remaining=$((18000 - time_diff))
-                
-                if [ $remaining -gt 0 ]; then
-                    create_progress_bar "$current_time" 18000 "$remaining"
-                    echo "  Next renewal at: $NEXT_RENEWAL_TIME"
-                else
-                    echo "  🚨 Renewal window active now!"
-                fi
+            local remaining_secs=$(( BLOCK_END_EPOCH - $(date +%s) ))
+            if [ "$remaining_secs" -gt 0 ]; then
+                create_progress_bar "$(date +%s)" 18000 "$remaining_secs"
+                echo "  Next renewal at: $NEXT_RENEWAL_TIME"
+            else
+                echo "  🚨 Renewal window active now!"
             fi
         else
-            echo "⏱️  TIME TO NEXT RESET:"
-            echo "  No active renewal tracking"
+            echo "  No active session block detected"
         fi
         echo ""
         
@@ -496,8 +476,11 @@ dash_daemon() {
         
         # Show recent activity
         if [ -f "$LOG_FILE" ]; then
+            local last_model
+            last_model=$(grep "Starting Claude session for renewal" "$LOG_FILE" | tail -1 | grep -o 'model: [^)]*' | sed 's/model: //')
             echo "📝 RECENT ACTIVITY:"
-            tail -5 "$LOG_FILE" | sed 's/^/  /'
+            [ -n "$last_model" ] && echo "  Last renewal model: $last_model"
+            tail -10 "$LOG_FILE" | sed 's/^/  /'
         else
             echo "📝 RECENT ACTIVITY:"
             echo "  No log file found"
@@ -603,11 +586,9 @@ case "$1" in
         echo "  start                      - Start the daemon"
         echo "  start --at TIME            - Start daemon but begin monitoring at specified time"
         echo "  start --at TIME --stop END - Start monitoring at TIME, stop at END"
-        echo "  start --disableccusage     - Start daemon without ccusage (clock-based only)"
         echo "  start --message \"text\"     - Use custom message for renewal instead of random greetings"
         echo "                               Examples: --at '09:00' --stop '17:00'"
         echo "                                        --at '2025-01-28 09:00' --stop '2025-01-28 17:00'"
-        echo "                                        --at '09:00' --stop '17:00' --disableccusage"
         echo "                                        --message 'continue working on the React feature'"
         echo "  stop                       - Stop the daemon"
         echo "  restart                    - Restart the daemon"
