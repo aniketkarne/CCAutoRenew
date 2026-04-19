@@ -13,7 +13,7 @@ DISABLE_CCUSAGE=false
 
 # Function to log messages
 log_message() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE" >&2
 }
 
 # Function to handle shutdown
