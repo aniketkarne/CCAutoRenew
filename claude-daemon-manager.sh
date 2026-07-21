@@ -8,6 +8,8 @@ LOG_FILE="$HOME/.claude-auto-renew-daemon.log"
 START_TIME_FILE="$HOME/.claude-auto-renew-start-time"
 STOP_TIME_FILE="$HOME/.claude-auto-renew-stop-time"
 MESSAGE_FILE="$HOME/.claude-auto-renew-message"
+MODEL_FILE="$HOME/.claude-auto-renew-model"
+EFFORT_FILE="$HOME/.claude-auto-renew-effort"
 
 # Colors for output
 RED='\033[0;31m'
@@ -33,7 +35,17 @@ start_daemon() {
     STOP_TIME=""
     DISABLE_CCUSAGE=false
     CUSTOM_MESSAGE=""
-    
+    CUSTOM_MODEL=""
+    CUSTOM_EFFORT=""
+
+    if [ -f "$MODEL_FILE" ]; then
+        CUSTOM_MODEL=$(cat "$MODEL_FILE")
+    fi
+
+    if [ -f "$EFFORT_FILE" ]; then
+        CUSTOM_EFFORT=$(cat "$EFFORT_FILE")
+    fi
+
     # Parse parameters
     while [[ $# -gt 1 ]]; do
         case $2 in
@@ -53,12 +65,20 @@ start_daemon() {
                 CUSTOM_MESSAGE="$3"
                 shift 2
                 ;;
+            --model)
+                CUSTOM_MODEL="$3"
+                shift 2
+                ;;
+            --effort)
+                CUSTOM_EFFORT="$3"
+                shift 2
+                ;;
             *)
                 shift
                 ;;
         esac
     done
-    
+
     # Process start time
     if [ -n "$START_TIME" ]; then
         # Validate and convert start time to epoch
@@ -66,15 +86,15 @@ start_daemon() {
             # Format: "HH:MM" - assume today
             START_TIME="$(date '+%Y-%m-%d') $START_TIME:00"
         fi
-        
+
         # Convert to epoch timestamp
         START_EPOCH=$(date -d "$START_TIME" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$START_TIME" +%s 2>/dev/null)
-        
+
         if [ $? -ne 0 ]; then
             print_error "Invalid start time format. Use 'HH:MM' or 'YYYY-MM-DD HH:MM'"
             return 1
         fi
-        
+
         # Store start time
         echo "$START_EPOCH" > "$START_TIME_FILE"
         print_status "Daemon will start monitoring at: $(date -d "@$START_EPOCH" 2>/dev/null || date -r "$START_EPOCH")"
@@ -82,7 +102,7 @@ start_daemon() {
         # Remove any existing start time (start immediately)
         rm -f "$START_TIME_FILE" 2>/dev/null
     fi
-    
+
     # Process stop time
     if [ -n "$STOP_TIME" ]; then
         # Validate and convert stop time to epoch
@@ -90,21 +110,21 @@ start_daemon() {
             # Format: "HH:MM" - assume today
             STOP_TIME="$(date '+%Y-%m-%d') $STOP_TIME:00"
         fi
-        
+
         # Convert to epoch timestamp
         STOP_EPOCH=$(date -d "$STOP_TIME" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$STOP_TIME" +%s 2>/dev/null)
-        
+
         if [ $? -ne 0 ]; then
             print_error "Invalid stop time format. Use 'HH:MM' or 'YYYY-MM-DD HH:MM'"
             return 1
         fi
-        
+
         # Validate that stop time is after start time
         if [ -n "$START_EPOCH" ] && [ "$STOP_EPOCH" -le "$START_EPOCH" ]; then
             print_error "Stop time must be after start time"
             return 1
         fi
-        
+
         # Store stop time
         echo "$STOP_EPOCH" > "$STOP_TIME_FILE"
         print_status "Daemon will stop monitoring at: $(date -d "@$STOP_EPOCH" 2>/dev/null || date -r "$STOP_EPOCH")"
@@ -112,7 +132,7 @@ start_daemon() {
         # Remove any existing stop time
         rm -f "$STOP_TIME_FILE" 2>/dev/null
     fi
-    
+
     # Process custom message
     if [ -n "$CUSTOM_MESSAGE" ]; then
         # Store custom message
@@ -122,7 +142,19 @@ start_daemon() {
         # Remove any existing custom message (use default messages)
         rm -f "$MESSAGE_FILE" 2>/dev/null
     fi
-    
+
+    # Process custom model
+    if [ -n "$CUSTOM_MODEL" ]; then
+        echo "$CUSTOM_MODEL" > "$MODEL_FILE"
+        print_status "Using Claude model: $CUSTOM_MODEL"
+    fi
+
+    # Process custom effort
+    if [ -n "$CUSTOM_EFFORT" ]; then
+        echo "$CUSTOM_EFFORT" > "$EFFORT_FILE"
+        print_status "Using Claude effort: $CUSTOM_EFFORT"
+    fi
+
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
@@ -130,16 +162,24 @@ start_daemon() {
             return 1
         fi
     fi
-    
+
     print_status "Starting Claude auto-renewal daemon..."
-    if [ "$DISABLE_CCUSAGE" = true ]; then
-        nohup "$DAEMON_SCRIPT" --disableccusage > /dev/null 2>&1 &
-    else
-        nohup "$DAEMON_SCRIPT" > /dev/null 2>&1 &
+    DAEMON_ARGS=()
+    if [ -n "$CUSTOM_MODEL" ]; then
+        DAEMON_ARGS+=(--model "$CUSTOM_MODEL")
     fi
-    
+    if [ -n "$CUSTOM_EFFORT" ]; then
+        DAEMON_ARGS+=(--effort "$CUSTOM_EFFORT")
+    fi
+    if [ "$DISABLE_CCUSAGE" = true ]; then
+        DAEMON_ARGS+=(--disableccusage)
+        nohup "$DAEMON_SCRIPT" "${DAEMON_ARGS[@]}" > /dev/null 2>&1 &
+    else
+        nohup "$DAEMON_SCRIPT" "${DAEMON_ARGS[@]}" > /dev/null 2>&1 &
+    fi
+
     sleep 2
-    
+
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
@@ -152,7 +192,7 @@ start_daemon() {
             return 0
         fi
     fi
-    
+
     print_error "Failed to start daemon"
     return 1
 }
@@ -162,18 +202,18 @@ stop_daemon() {
         print_warning "Daemon is not running (no PID file found)"
         return 1
     fi
-    
+
     PID=$(cat "$PID_FILE")
-    
+
     if ! kill -0 "$PID" 2>/dev/null; then
         print_warning "Daemon is not running (process $PID not found)"
         rm -f "$PID_FILE"
         return 1
     fi
-    
+
     print_status "Stopping daemon with PID $PID..."
     kill "$PID"
-    
+
     # Wait for graceful shutdown
     for i in {1..10}; do
         if ! kill -0 "$PID" 2>/dev/null; then
@@ -183,7 +223,7 @@ stop_daemon() {
         fi
         sleep 1
     done
-    
+
     # Force kill if still running
     print_warning "Daemon did not stop gracefully, forcing..."
     kill -9 "$PID" 2>/dev/null
@@ -196,15 +236,15 @@ get_daemon_timing_info() {
     current_epoch=$(date +%s)
     start_epoch=""
     stop_epoch=""
-    
+
     if [ -f "$START_TIME_FILE" ]; then
         start_epoch=$(cat "$START_TIME_FILE")
     fi
-    
+
     if [ -f "$STOP_TIME_FILE" ]; then
         stop_epoch=$(cat "$STOP_TIME_FILE")
     fi
-    
+
     # Return values via global variables
     CURRENT_EPOCH="$current_epoch"
     START_EPOCH="$start_epoch"
@@ -214,7 +254,7 @@ get_daemon_timing_info() {
 # Get daemon status information
 get_daemon_status() {
     get_daemon_timing_info
-    
+
     # Determine current status
     if [ -n "$START_EPOCH" ] && [ "$CURRENT_EPOCH" -lt "$START_EPOCH" ]; then
         # Before start time
@@ -252,17 +292,17 @@ get_daemon_status() {
 # Get next renewal estimate
 get_next_renewal_estimate() {
     get_daemon_timing_info
-    
+
     NEXT_RENEWAL_TIME=""
     NEXT_RENEWAL_REMAINING=""
-    
+
     # Only show if active or no scheduling
     if [ ! -f "$START_TIME_FILE" ] || [ "$CURRENT_EPOCH" -ge "$(cat "$START_TIME_FILE" 2>/dev/null || echo 0)" ]; then
         if [ -f "$HOME/.claude-last-activity" ]; then
             last_activity=$(cat "$HOME/.claude-last-activity")
             time_diff=$((CURRENT_EPOCH - last_activity))
             remaining=$((18000 - time_diff))
-            
+
             if [ $remaining -gt 0 ]; then
                 hours=$((remaining / 3600))
                 minutes=$(((remaining % 3600) / 60))
@@ -277,45 +317,45 @@ get_next_renewal_estimate() {
 # Generate day plan with estimated renewal times
 generate_day_plan() {
     get_daemon_timing_info
-    
+
     # Clear the day plan array
     DAY_PLAN=()
-    
+
     # Get current date for calculations
     current_date=$(date '+%Y-%m-%d')
     day_start_epoch=$(date -d "$current_date 00:00:00" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$current_date 00:00:00" +%s 2>/dev/null)
     day_end_epoch=$((day_start_epoch + 86400))
-    
+
     # Determine the active window for today
     active_start=$day_start_epoch
     active_end=$day_end_epoch
-    
+
     if [ -n "$START_EPOCH" ]; then
         # Use today's version of start time
         start_time_today=$(date -d "@$START_EPOCH" '+%H:%M:%S' 2>/dev/null || date -r "$START_EPOCH" '+%H:%M:%S')
         active_start=$(date -d "$current_date $start_time_today" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$current_date $start_time_today" +%s 2>/dev/null)
     fi
-    
+
     if [ -n "$STOP_EPOCH" ]; then
         # Use today's version of stop time
         stop_time_today=$(date -d "@$STOP_EPOCH" '+%H:%M:%S' 2>/dev/null || date -r "$STOP_EPOCH" '+%H:%M:%S')
         active_end=$(date -d "$current_date $stop_time_today" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$current_date $stop_time_today" +%s 2>/dev/null)
     fi
-    
+
     # If we have last activity, calculate potential renewal times
     if [ -f "$HOME/.claude-last-activity" ]; then
         last_activity=$(cat "$HOME/.claude-last-activity")
-        
+
         # Calculate the first potential renewal after last activity
         first_renewal=$((last_activity + 18000))  # 5 hours after last activity
-        
+
         # Generate renewal times throughout the day
         current_renewal=$first_renewal
         while [ $current_renewal -lt $day_end_epoch ]; do
             # Check if this renewal time is within active hours
             if [ $current_renewal -ge $active_start ] && [ $current_renewal -le $active_end ]; then
                 renewal_time_str=$(date -d "@$current_renewal" '+%H:%M' 2>/dev/null || date -r "$current_renewal" '+%H:%M')
-                
+
                 # Mark if this is the next upcoming renewal
                 if [ $current_renewal -gt $CURRENT_EPOCH ]; then
                     if [ ${#DAY_PLAN[@]} -eq 0 ]; then
@@ -331,12 +371,12 @@ generate_day_plan() {
                     DAY_PLAN+=("$renewal_time_str")
                 fi
             fi
-            
+
             # Next renewal is 5 hours later
             current_renewal=$((current_renewal + 18000))
         done
     fi
-    
+
     # If no renewals planned, show when monitoring is active
     if [ ${#DAY_PLAN[@]} -eq 0 ]; then
         if [ -n "$START_EPOCH" ] && [ -n "$STOP_EPOCH" ]; then
@@ -356,34 +396,34 @@ create_progress_bar() {
     local current_time="$1"
     local total_time="$2"
     local remaining_time="$3"
-    
+
     if [ $total_time -le 0 ]; then
         echo "No progress data available"
         return
     fi
-    
+
     # Calculate percentage
     local elapsed_time=$((total_time - remaining_time))
     local percentage=$((elapsed_time * 100 / total_time))
-    
+
     # Ensure percentage is within bounds
     if [ $percentage -lt 0 ]; then
         percentage=0
     elif [ $percentage -gt 100 ]; then
         percentage=100
     fi
-    
+
     # Create the bar (40 characters wide)
     local bar_length=40
     local filled_length=$((percentage * bar_length / 100))
     local empty_length=$((bar_length - filled_length))
-    
+
     # Color codes
     local green='\033[0;32m'
     local yellow='\033[1;33m'
     local red='\033[0;31m'
     local nc='\033[0m'
-    
+
     # Choose color based on remaining time
     local color="$green"
     if [ $remaining_time -lt 1800 ]; then  # Less than 30 minutes
@@ -391,25 +431,25 @@ create_progress_bar() {
     elif [ $remaining_time -lt 3600 ]; then  # Less than 1 hour
         color="$yellow"
     fi
-    
+
     # Build the progress bar
     local filled_bar=""
     local empty_bar=""
-    
+
     # Create filled portion
     for i in $(seq 1 $filled_length); do
         filled_bar="${filled_bar}█"
     done
-    
-    # Create empty portion  
+
+    # Create empty portion
     for i in $(seq 1 $empty_length); do
         empty_bar="${empty_bar}░"
     done
-    
+
     # Format remaining time
     local hours=$((remaining_time / 3600))
     local minutes=$(((remaining_time % 3600) / 60))
-    
+
     # Display the progress bar
     echo -e "  ${color}${filled_bar}${nc}${empty_bar} ${percentage}% (${hours}h ${minutes}m remaining)"
 }
@@ -422,7 +462,7 @@ dash_daemon() {
         echo "Start the daemon with: $0 start"
         return 1
     fi
-    
+
     PID=$(cat "$PID_FILE")
     if ! kill -0 "$PID" 2>/dev/null; then
         print_error "Daemon is not running (process $PID not found)"
@@ -430,14 +470,14 @@ dash_daemon() {
         echo "Start the daemon with: $0 start"
         return 1
     fi
-    
+
     # Trap Ctrl+C to exit gracefully
     trap 'echo ""; echo "Dashboard stopped."; exit 0' INT
-    
+
     echo "Claude Auto-Renewal Dashboard (Press Ctrl+C to exit)"
     echo "Updating every minute..."
     echo ""
-    
+
     while true; do
         # Clear screen and show header
         clear
@@ -446,10 +486,10 @@ dash_daemon() {
         echo "║                   $(date '+%A, %B %d, %Y - %H:%M:%S')                   ║"
         echo "╚══════════════════════════════════════════════════════════════════════════════╝"
         echo ""
-        
+
         # Get current daemon status
         get_daemon_status
-        
+
         echo "🔧 DAEMON STATUS:"
         echo "  PID: $PID"
         echo "  Status: $DAEMON_STATUS_TEXT"
@@ -457,7 +497,7 @@ dash_daemon() {
             echo -e "$DAEMON_STATUS_DETAIL" | sed 's/^/  /'
         fi
         echo ""
-        
+
         # Show progress bar for next renewal
         get_next_renewal_estimate
         if [ -n "$NEXT_RENEWAL_REMAINING" ]; then
@@ -468,7 +508,7 @@ dash_daemon() {
                 current_time=$(date +%s)
                 time_diff=$((current_time - last_activity))
                 remaining=$((18000 - time_diff))
-                
+
                 if [ $remaining -gt 0 ]; then
                     create_progress_bar "$current_time" 18000 "$remaining"
                     echo "  Next renewal at: $NEXT_RENEWAL_TIME"
@@ -481,7 +521,7 @@ dash_daemon() {
             echo "  No active renewal tracking"
         fi
         echo ""
-        
+
         # Show day plan
         generate_day_plan
         echo "📅 TODAY'S RENEWAL PLAN:"
@@ -493,7 +533,7 @@ dash_daemon() {
             echo "  No renewal plan available"
         fi
         echo ""
-        
+
         # Show recent activity
         if [ -f "$LOG_FILE" ]; then
             echo "📝 RECENT ACTIVITY:"
@@ -503,9 +543,9 @@ dash_daemon() {
             echo "  No log file found"
         fi
         echo ""
-        
+
         echo "Last updated: $(date '+%H:%M:%S') | Press Ctrl+C to exit"
-        
+
         # Wait 60 seconds before next update
         sleep 60
     done
@@ -516,12 +556,12 @@ status_daemon() {
         print_status "Daemon is not running"
         return 1
     fi
-    
+
     PID=$(cat "$PID_FILE")
-    
+
     if kill -0 "$PID" 2>/dev/null; then
         print_status "Daemon is running with PID $PID"
-        
+
         get_daemon_status
         print_status "Status: $DAEMON_STATUS_TEXT"
         if [ -n "$DAEMON_STATUS_DETAIL" ]; then
@@ -529,21 +569,21 @@ status_daemon() {
                 print_status "$line"
             done
         fi
-        
+
         # Show recent activity
         if [ -f "$LOG_FILE" ]; then
             echo ""
             print_status "Recent activity:"
             tail -5 "$LOG_FILE" | sed 's/^/  /'
         fi
-        
+
         # Show next renewal estimate
         get_next_renewal_estimate
         if [ -n "$NEXT_RENEWAL_REMAINING" ]; then
             echo ""
             print_status "Estimated time until next renewal: $NEXT_RENEWAL_REMAINING"
         fi
-        
+
         return 0
     else
         print_warning "Daemon is not running (process $PID not found)"
@@ -564,7 +604,7 @@ show_logs() {
         print_error "No log file found"
         return 1
     fi
-    
+
     if [ "$1" = "-f" ]; then
         tail -f "$LOG_FILE"
     else
@@ -604,10 +644,13 @@ case "$1" in
         echo "  start --at TIME            - Start daemon but begin monitoring at specified time"
         echo "  start --at TIME --stop END - Start monitoring at TIME, stop at END"
         echo "  start --disableccusage     - Start daemon without ccusage (clock-based only)"
+        echo "  start --model NAME         - Use a specific Claude model for renewals"
+        echo "  start --effort LEVEL       - Use a specific Claude effort level"
         echo "  start --message \"text\"     - Use custom message for renewal instead of random greetings"
         echo "                               Examples: --at '09:00' --stop '17:00'"
         echo "                                        --at '2025-01-28 09:00' --stop '2025-01-28 17:00'"
         echo "                                        --at '09:00' --stop '17:00' --disableccusage"
+        echo "                                        --model 'haiku' --effort 'low'"
         echo "                                        --message 'continue working on the React feature'"
         echo "  stop                       - Stop the daemon"
         echo "  restart                    - Restart the daemon"
