@@ -13,7 +13,7 @@ Claude Code operates on a 5-hour subscription model that renews from your first 
 
 **Solution:** CC AutoRenew prevents both gaps AND session burning:
 - 🚫 **Prevents Gaps** - Automatically starts new sessions when blocks expire
-- ⏰ **Prevents Session Burning** - Schedule when monitoring begins (`--at "09:00"`) 
+- ⏰ **Prevents Session Burning** - Schedule when monitoring begins (`--at "09:00"`)
 - 🎯 **Perfect Timing** - Start your 5-hour block exactly when you need it
 
 ## ✨ Features
@@ -27,6 +27,7 @@ Claude Code operates on a 5-hour subscription model that renews from your first 
 - 📝 **Detailed Logging** - Track all renewal activities with WAITING/ACTIVE/STOPPED states
 - 📊 **Live Dashboard** - Real-time monitoring with progress bars and renewal schedules
 - 💬 **Custom Messages** - Use `--message` to send contextual renewal messages instead of generic greetings
+- 💸 **Economical Defaults** - Uses a low-effort Claude session and a configurable model via `CLAUDE_MODEL`
 - 🛡️ **Failsafe Design** - Multiple fallback mechanisms and prevents renewals near stop time
 - 🖥️ **Cross-platform** - Works on macOS and Linux
 - ⚡ **Clock-only Mode** - Use `--disableccusage` flag to bypass ccusage entirely
@@ -159,7 +160,7 @@ The new live dashboard provides real-time monitoring of your Claude renewal stat
 
 **Progress Bar Colors:**
 - 🟢 **Green** - More than 1 hour remaining
-- 🟡 **Yellow** - 30-60 minutes remaining  
+- 🟡 **Yellow** - 30-60 minutes remaining
 - 🔴 **Red** - Less than 30 minutes remaining
 
 **Usage:**
@@ -201,6 +202,18 @@ Example dashboard output:
 5. **Stops** monitoring at configured stop time
 6. **Automatically restarts** the next day at start time
 7. **Logs** all activities for transparency
+
+### Economical Mode
+
+By default, the daemon uses a low-effort Claude session and a model set through `CLAUDE_MODEL`. The scripts default that variable to `haiku`, but you can override both at startup through command flags:
+
+```bash
+./claude-daemon-manager.sh start --model haiku --effort low
+```
+
+The selected values persist across restarts until you change them again.
+
+If your Claude CLI/account exposes a cheaper model alias, pass it with `--model` and it will be used for every renewal.
 
 ### Custom Renewal Messages 💬
 
@@ -285,7 +298,7 @@ This mode is useful when:
 
 The daemon adjusts its checking frequency based on time remaining:
 - **Normal**: Every 10 minutes
-- **< 30 minutes**: Every 2 minutes  
+- **< 30 minutes**: Every 2 minutes
 - **< 5 minutes**: Every 30 seconds
 - **After renewal**: 5-minute cooldown
 
@@ -347,7 +360,7 @@ The daemon uses smart defaults, but you can modify behavior by editing `claude-a
 ```bash
 # Adjust check intervals (in seconds)
 - Normal: 600 (10 minutes)
-- Approaching: 120 (2 minutes)  
+- Approaching: 120 (2 minutes)
 - Imminent: 30 (30 seconds)
 ```
 
@@ -434,7 +447,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Can be added to system startup for automatic launch
 
 ---
-## Buy me a coffee if you like my work: 
+## Buy me a coffee if you like my work:
 
 <a href="https://www.buymeacoffee.com/aniketkarne" target="_blank"><img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee" style="height: 41px !important;width: 174px !important;box-shadow: 0px 3px 2px 0px rgba(190, 190, 190, 0.5) !important;-webkit-box-shadow: 0px 3px 2px 0px rgba(190, 190, 190, 0.5) !important;" ></a>
 --
