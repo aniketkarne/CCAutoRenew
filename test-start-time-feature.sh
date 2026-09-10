@@ -128,7 +128,7 @@ test_start_time_parsing() {
     print_test "Testing start time parsing and validation"
     
     # Test invalid time format
-    if "$DAEMON_MANAGER" start --at "invalid" 2>&1 | grep -q "Invalid time format"; then
+    if "$DAEMON_MANAGER" start --at "invalid" 2>&1 | grep -qE "Invalid (start |stop )?time format"; then
         print_success "Invalid time format correctly rejected"
     else
         print_fail "Invalid time format not properly handled"

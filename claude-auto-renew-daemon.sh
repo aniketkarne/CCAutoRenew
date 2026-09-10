@@ -9,6 +9,7 @@ LAST_ACTIVITY_FILE="$HOME/.claude-last-activity"
 START_TIME_FILE="$HOME/.claude-auto-renew-start-time"
 STOP_TIME_FILE="$HOME/.claude-auto-renew-stop-time"
 MESSAGE_FILE="$HOME/.claude-auto-renew-message"
+DAYS_FILE="$HOME/.claude-auto-renew-days"
 DISABLE_CCUSAGE=false
 
 # Function to log messages
@@ -31,15 +32,20 @@ is_monitoring_active() {
     local current_epoch=$(date +%s)
     local start_epoch=""
     local stop_epoch=""
-    
+
     if [ -f "$START_TIME_FILE" ]; then
         start_epoch=$(cat "$START_TIME_FILE")
     fi
-    
+
     if [ -f "$STOP_TIME_FILE" ]; then
         stop_epoch=$(cat "$STOP_TIME_FILE")
     fi
-    
+
+    # If a day filter is configured and today isn't an active day, skip.
+    if ! is_day_active; then
+        return 1
+    fi
+
     # If no start time set, always active (unless stop time is set and passed)
     if [ -z "$start_epoch" ]; then
         if [ -n "$stop_epoch" ] && [ "$current_epoch" -ge "$stop_epoch" ]; then
@@ -48,18 +54,89 @@ is_monitoring_active() {
             return 0  # Active
         fi
     fi
-    
+
     # Check if we're before start time
     if [ "$current_epoch" -lt "$start_epoch" ]; then
         return 1  # Before start time
     fi
-    
+
     # Check if we're past stop time
     if [ -n "$stop_epoch" ] && [ "$current_epoch" -ge "$stop_epoch" ]; then
         return 1  # Past stop time
     fi
-    
+
     return 0  # In active window
+}
+
+# Returns 0 if today is in the configured day filter (or no filter set).
+is_day_active() {
+    if [ ! -f "$DAYS_FILE" ]; then
+        return 0
+    fi
+    local spec
+    spec="$(cat "$DAYS_FILE" 2>/dev/null)"
+    [ -z "$spec" ] && return 0
+    spec="$(echo "$spec" | tr '[:upper:]' '[:lower:]')"
+    case ",$spec," in
+        *",all,"*) return 0 ;;
+    esac
+    local today
+    today="$(date '+%a' | tr '[:upper:]' '[:lower:]')"
+    case ",$spec," in
+        *",$today,"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Returns 0 if `epoch` falls on an active day according to DAYS_FILE.
+is_epoch_on_active_day() {
+    local epoch="$1"
+    if [ ! -f "$DAYS_FILE" ]; then
+        return 0
+    fi
+    local spec
+    spec="$(cat "$DAYS_FILE" 2>/dev/null)"
+    [ -z "$spec" ] && return 0
+    spec="$(echo "$spec" | tr '[:upper:]' '[:lower:]')"
+    case ",$spec," in
+        *",all,"*) return 0 ;;
+    esac
+    local dow
+    dow="$(date -d "@$epoch" '+%a' 2>/dev/null || date -r "$epoch" '+%a' 2>/dev/null)"
+    dow="$(echo "$dow" | tr '[:upper:]' '[:lower:]')"
+    case ",$spec," in
+        *",$dow,"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Advance start_epoch (and stop_epoch) forward to the next active day at the
+# same HH:MM:SS. Called when an end-of-day roll-over lands on a non-active day.
+advance_to_next_active_day() {
+    if [ ! -f "$START_TIME_FILE" ]; then
+        return 1
+    fi
+    local start_epoch stop_epoch=""
+    start_epoch=$(cat "$START_TIME_FILE")
+    if [ -f "$STOP_TIME_FILE" ]; then
+        stop_epoch=$(cat "$STOP_TIME_FILE")
+    fi
+
+    local i next_start next_stop
+    for i in 1 2 3 4 5 6 7 8; do
+        next_start=$((start_epoch + 86400 * i))
+        if is_epoch_on_active_day "$next_start"; then
+            if [ -n "$stop_epoch" ]; then
+                next_stop=$((stop_epoch + 86400 * i))
+                echo "$next_stop" > "$STOP_TIME_FILE"
+            fi
+            echo "$next_start" > "$START_TIME_FILE"
+            rm -f "${START_TIME_FILE}.activated" 2>/dev/null
+            log_message "📅 Next active day: $(date -d "@$next_start" 2>/dev/null || date -r "$next_start")"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # Function to check if we should schedule next day restart
@@ -309,12 +386,21 @@ main() {
     else
         log_message "No start time set - will begin monitoring immediately"
     fi
-    
+
     if [ -f "$STOP_TIME_FILE" ]; then
         stop_epoch=$(cat "$STOP_TIME_FILE")
         log_message "Stop time configured: $(date -d "@$stop_epoch" 2>/dev/null || date -r "$stop_epoch")"
     else
         log_message "No stop time set - will monitor continuously"
+    fi
+
+    # Day filter
+    if [ -f "$DAYS_FILE" ]; then
+        local days_spec
+        days_spec="$(cat "$DAYS_FILE" 2>/dev/null)"
+        if [ -n "$days_spec" ] && [ "$days_spec" != "all" ]; then
+            log_message "📅 Active days: $days_spec"
+        fi
     fi
     
     # Check for custom message
@@ -337,8 +423,15 @@ main() {
         if should_restart_tomorrow; then
             log_message "🛑 Stop time reached. Scheduling restart for tomorrow..."
             schedule_next_day_restart
-            
-            # Wait for tomorrow's start time
+
+            # If a day filter is set and tomorrow isn't an active day, skip
+            # ahead to the next active day so we don't fire every 5 min on
+            # off-days asking "is it time yet?".
+            if [ -f "$DAYS_FILE" ] && ! is_day_active; then
+                advance_to_next_active_day
+            fi
+
+            # Wait for tomorrow's (or next active day's) start time
             while ! is_monitoring_active; do
                 time_until_start=$(get_time_until_start)
                 hours=$((time_until_start / 3600))
