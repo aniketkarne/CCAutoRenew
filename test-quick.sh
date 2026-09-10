@@ -134,6 +134,64 @@ else
     fi
 fi
 
+# Test 9: Test --days parsing (issue #17: day-of-week filter)
+print_test "Testing --days filter parsing"
+# Run with a sandboxed HOME so we don't pollute the user's state
+DAYS_TEST_HOME="$(mktemp -d -t cc-autorenew-daytest-XXXXXX)"
+export HOME="$DAYS_TEST_HOME"
+
+# Valid: weekdays expands to canonical form
+if ./claude-daemon-manager.sh start --days "weekdays" 2>&1 | grep -q "Active days: mon,tue,wed,thu,fri"; then
+    if [ "$(cat "$HOME/.claude-auto-renew-days" 2>/dev/null)" = "mon,tue,wed,thu,fri" ]; then
+        print_pass "--days weekdays expands correctly"
+    else
+        print_fail "--days weekdays: file content mismatch ($(cat "$HOME/.claude-auto-renew-days" 2>/dev/null))"
+    fi
+else
+    print_fail "--days weekdays not handled correctly"
+fi
+
+# Valid: range
+if ./claude-daemon-manager.sh start --days "sat-sun" 2>&1 | grep -q "Active days: sat,sun"; then
+    print_pass "--days sat-sun range handled"
+else
+    print_fail "--days sat-sun range not handled"
+fi
+
+# Valid: mixed case/whitespace, normalizes to canonical
+if ./claude-daemon-manager.sh start --days "mon, Wed ,fri" 2>&1 | grep -q "Active days: mon,wed,fri"; then
+    print_pass "--days normalizes case and whitespace"
+else
+    print_fail "--days normalization failed"
+fi
+
+# Invalid: garbage rejected
+if ./claude-daemon-manager.sh start --days "funday" 2>&1 | grep -q "Invalid --days value"; then
+    print_pass "--days rejects invalid value"
+else
+    print_fail "--days should reject 'funday'"
+fi
+
+# Invalid: backwards range rejected
+if ./claude-daemon-manager.sh start --days "fri-mon" 2>&1 | grep -q "Invalid --days value"; then
+    print_pass "--days rejects backwards range"
+else
+    print_fail "--days should reject backwards range"
+fi
+
+# Valid: 'all' alias clears the filter (no DAYS_FILE written)
+DAYS_BEFORE="$(cat "$HOME/.claude-auto-renew-days" 2>/dev/null)"
+./claude-daemon-manager.sh start --days "all" >/dev/null 2>&1 || true
+DAYS_AFTER="$(cat "$HOME/.claude-auto-renew-days" 2>/dev/null)"
+if [ -z "$DAYS_AFTER" ] || [ "$DAYS_AFTER" = "all" ]; then
+    print_pass "--days all clears the filter"
+else
+    print_fail "--days all: expected empty or 'all', got '$DAYS_AFTER'"
+fi
+
+unset HOME
+rm -rf "$DAYS_TEST_HOME"
+
 # Summary
 echo ""
 echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"

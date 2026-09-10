@@ -27,6 +27,7 @@ Claude Code operates on a 5-hour subscription model that renews from your first 
 - 🔄 **Automatic Renewal** - Starts Claude sessions exactly when needed
 - ⏰ **Scheduled Start Times** - Set when daemon begins monitoring (`--at "09:00"`)
 - 🛑 **Scheduled Stop Times** - Set when daemon stops monitoring (`--stop "17:00"`)
+- 📅 **Day-of-Week Filter** - Limit monitoring to specific days (`--days weekdays`)
 - 🌅 **Daily Auto-Restart** - Automatically resumes next day at start time
 - 📊 **Smart Monitoring** - Integrates with [ccusage](https://github.com/ryoppippi/ccusage) for accurate timing
 - 🎯 **Intelligent Scheduling** - Checks more frequently as renewal approaches
@@ -125,6 +126,10 @@ chmod +x *.sh
 ./claude-daemon-manager.sh start --message "continue working on the React feature"
 ./claude-daemon-manager.sh start --at "09:00" --message "resume our Python project"
 
+# Start with a day-of-week filter (only renew on weekdays)
+./claude-daemon-manager.sh start --days weekdays --at "09:00" --stop "17:00"
+./claude-daemon-manager.sh start --days mon,wed,fri
+
 # Check daemon status
 ./claude-daemon-manager.sh status
 
@@ -200,13 +205,42 @@ Example dashboard output:
 
 ### How It Works
 
-1. **Monitors** your Claude usage using ccusage (or time-based fallback)
-2. **Detects** when your 5-hour block is about to expire
-3. **Waits** until just after expiration (within scheduled hours)
-4. **Starts** a minimal Claude session (custom message or random greeting)
-5. **Stops** monitoring at configured stop time
-6. **Automatically restarts** the next day at start time
-7. **Logs** all activities for transparency
+Claude Code's quota renews on a **rolling 5-hour window** from the time of your
+first message in that window. CC AutoRenew makes sure a session is already
+running right when each window expires, so you never see a "limit reached"
+gap between work sessions.
+
+**The lifecycle of one renewal:**
+
+1. **Detect** — Daemon polls `ccusage` (or the clock fallback) to learn when
+   your current 5-hour window ends.
+2. **Wait** — When the window is within ~2 minutes of expiring, daemon prepares
+   to act. If you've set `--stop`, it backs off 10 minutes before stop so it
+   doesn't start a session you can't finish.
+3. **Renew** — Daemon sends a short message (`hi`, a random greeting, or your
+   `--message`) to start a new 5-hour window at the moment the old one ends.
+4. **Rest** — Sleeps for 5 minutes after a successful renewal (avoids spamming
+   if ccusage returns a stale number).
+5. **Repeat** — Continues until stop time. Then sleeps until next day's start,
+   or, if `--days` is set, until the next active day.
+
+**Important behaviors to know:**
+
+- **The daemon must be running before your window expires.** It can't renew a
+  window that already lapsed while the daemon was off. If your computer is
+  asleep or the daemon is stopped, the 5h clock keeps ticking against you.
+- **`--at` controls when monitoring starts, not when renewals happen.** If
+  your laptop is closed at 6:55 and `--at` is 7:00, the daemon will start
+  monitoring at 7:00 (not 6:55). Renewals are scheduled based on the last
+  activity timestamp + 5h, not the wall-clock schedule.
+- **A renewal = a new 5h window starting from "now".** Each successful
+  renewal resets your 5-hour clock to the moment the message was sent.
+- **First run needs a session to anchor the window.** If `~/.claude-last-activity`
+  is missing, daemon sends an initial message immediately on first start (so
+  the next 5h window is already counted down).
+
+See [Issue #9 — Question regarding start --at](https://github.com/aniketkarne/CCAutoRenew/issues/9)
+for the original Q&A this section was written from.
 
 ### Custom Renewal Messages 💬
 
@@ -262,6 +296,44 @@ This mode is useful when:
 - You prefer simpler time-based renewal checking
 - You're in a restricted environment where ccusage can't run
 
+### Day-of-Week Filter 📅
+
+By default the daemon monitors every day. Use `--days` to limit it to specific
+days — useful if you only code on weekdays, or want a different schedule on
+weekends.
+
+```bash
+# Work-week only (Mon-Fri)
+./claude-daemon-manager.sh start --days weekdays --at "09:00" --stop "17:00"
+
+# Custom range
+./claude-daemon-manager.sh start --days mon-fri --at "09:00" --stop "17:00"
+
+# Specific days (mix, comma-separated)
+./claude-daemon-manager.sh start --days mon,wed,fri
+
+# Weekend-only hobby session
+./claude-daemon-manager.sh start --days sat,sun --at "10:00"
+
+# Reset to "every day" (the default)
+./claude-daemon-manager.sh start --days all
+```
+
+Accepted formats:
+- `weekdays` → mon,tue,wed,thu,fri
+- `weekends` → sat,sun
+- `mon-fri`, `tue-thu`, `sat-sun` → ranges in canonical order
+- `mon,wed,fri` → any combination (case- and whitespace-insensitive)
+- `all` → no filter (default behavior)
+
+How it interacts with `--at` and `--stop`:
+- On an inactive day, the daemon waits silently until the next active day.
+- When stop time hits on the last active day of a stretch, the daemon
+  advances start/stop to the next active day at the same HH:MM, instead of
+  waking every 5 minutes to ask "is it time yet?".
+
+Filter is persisted across restarts. To clear it, restart with `--days all`.
+
 ### 💡 Avoid Session Burning
 
 **Problem:** Starting daemon at wrong time wastes your 5-hour block
@@ -286,6 +358,7 @@ This mode is useful when:
 - 📅 **Planned Session**: `--at "2025-01-28 14:30"` for specific date/time
 - 💬 **Context Preservation**: `--message "continue React feature"` to maintain work context
 - ⚡ **Clock-only Mode**: `--at "09:00" --stop "17:00" --disableccusage` to bypass ccusage
+- 📆 **Weekdays Only**: `--days weekdays --at "09:00" --stop "17:00"` to skip weekends
 
 ### Monitoring Schedule
 
@@ -339,6 +412,11 @@ CCAutoRenew/
 
 Logs are stored in your home directory:
 - `~/.claude-auto-renew-daemon.log` - Main daemon activity
+- `~/.claude-auto-renew-daemon.pid` - Running daemon PID
+- `~/.claude-auto-renew-start-time` - Configured start time (epoch)
+- `~/.claude-auto-renew-stop-time` - Configured stop time (epoch)
+- `~/.claude-auto-renew-message` - Custom renewal message (if set)
+- `~/.claude-auto-renew-days` - Active day-of-week filter (canonical form, if set)
 - `~/.claude-last-activity` - Timestamp of last renewal
 
 View recent activity:
@@ -364,12 +442,67 @@ The daemon uses smart defaults, but you can modify behavior by editing `claude-a
 ## 🐛 Troubleshooting
 
 ### Daemon won't start
+
+The manager now prints the real reason when startup fails. Look for these
+specific messages:
+
+```bash
+# "claude CLI not found in PATH"
+→ Install Claude Code: https://www.anthropic.com/claude-code
+→ Or check `which claude`
+
+# "Daemon is already running with PID N"
+→ Stale PID file or a real running daemon. Check `ps -p N`.
+
+# "Daemon output:" followed by a bash error
+→ Read the error. Common: `${var,,}` style expansion on bash <4.0,
+  or syntax error in a local edit. Check `bash --version`.
+
+# "Failed to start daemon" with no output
+→ Permission issue: `chmod +x *.sh`. Or the daemon exited cleanly
+  but failed to write its PID file — read `~/.claude-auto-renew-daemon.log`.
+```
+
+Other diagnostics:
 ```bash
 # Check if already running
 ./claude-daemon-manager.sh status
 
 # Check logs for errors
 tail -20 ~/.claude-auto-renew-daemon.log
+
+# Verify the daemon script parses
+bash -n ./claude-auto-renew-daemon.sh
+```
+
+### "I've hit my limit but the manager isn't responding"
+
+The manager doesn't respond to messages you type into an *already-running*
+`claude` session — Claude Code shows the limit message inside its own TTY and
+the daemon has no way to read it. What the daemon actually does:
+
+- Tracks your **last 5-hour window** via `~/.claude-last-activity`.
+- When that window is about to expire, **starts a brand-new `claude`
+  session** (in the background) with a short message. The new session IS
+  the new window — your quota resets at that moment.
+
+If you're already in a session and see "You've hit your limit":
+
+1. Wait ~2 minutes for the daemon to detect expiry and fire a renewal.
+2. Or restart manually: `claude` in a fresh terminal — but this consumes a
+   full window right now instead of waiting for the next natural boundary.
+
+See [Issue #12 — How to use this tool?](https://github.com/aniketkarne/CCAutoRenew/issues/12).
+
+### Day filter / "I set --days but it didn't skip a day"
+
+```bash
+# Confirm the filter is actually written:
+cat ~/.claude-auto-renew-days
+
+# Should print the canonical form, e.g. "mon,tue,wed,thu,fri".
+# If it prints your raw input ("weekdays", "mon, Wed ,fri"), you're
+# running an older manager — pull latest and reinstall.
 ```
 
 ### ccusage not working

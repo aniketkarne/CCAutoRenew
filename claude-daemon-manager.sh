@@ -8,6 +8,7 @@ LOG_FILE="$HOME/.claude-auto-renew-daemon.log"
 START_TIME_FILE="$HOME/.claude-auto-renew-start-time"
 STOP_TIME_FILE="$HOME/.claude-auto-renew-stop-time"
 MESSAGE_FILE="$HOME/.claude-auto-renew-message"
+DAYS_FILE="$HOME/.claude-auto-renew-days"
 
 # Colors for output
 RED='\033[0;31m'
@@ -27,13 +28,101 @@ print_warning() {
     echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
+# Day-of-week helpers — accept tokens like "mon", "tue", ..., "sun" or aliases
+# "weekdays" (mon-fri) / "weekends" (sat-sun) / "all" (no restriction).
+
+# Expand a day spec into a normalized, comma-separated list of lowercase
+# 3-letter day tokens in canonical order (mon..sun). Returns 1 if invalid.
+expand_days_spec() {
+    local spec="$1"
+    local normalized=""
+    local token
+
+    spec="$(echo "$spec" | tr '[:upper:]' '[:lower:]')"
+
+    IFS=',' read -ra parts <<< "$spec"
+    for token in "${parts[@]}"; do
+        token="$(echo "$token" | tr -d '[:space:]')"
+        [ -z "$token" ] && continue
+
+        # Range: mon-fri
+        if [[ "$token" == *-* ]]; then
+            local first="${token%-*}"
+            local last="${token#*-}"
+            if [[ ! "$first" =~ ^(mon|tue|wed|thu|fri|sat|sun)$ ]] \
+                || [[ ! "$last" =~ ^(mon|tue|wed|thu|fri|sat|sun)$ ]]; then
+                return 1
+            fi
+            local order="mon tue wed thu fri sat sun"
+            local f_idx=-1 l_idx=-1 i=0 cur
+            for cur in $order; do
+                if [ "$cur" = "$first" ]; then f_idx=$i; fi
+                if [ "$cur" = "$last" ]; then l_idx=$i; fi
+                i=$((i+1))
+            done
+            if [ "$f_idx" -gt "$l_idx" ]; then return 1; fi
+            i=$f_idx
+            while [ "$i" -le "$l_idx" ]; do
+                local d
+                case $i in
+                    0) d=mon ;; 1) d=tue ;; 2) d=wed ;; 3) d=thu ;;
+                    4) d=fri ;; 5) d=sat ;; 6) d=sun ;;
+                esac
+                case ",$normalized," in
+                    *",$d,"*) ;;
+                    *) normalized="${normalized:+$normalized,}$d" ;;
+                esac
+                i=$((i+1))
+            done
+            continue
+        fi
+
+        case "$token" in
+            weekdays)
+                for d in mon tue wed thu fri; do
+                    case ",$normalized," in
+                        *",$d,"*) ;;
+                        *) normalized="${normalized:+$normalized,}$d" ;;
+                    esac
+                done
+                ;;
+            weekends)
+                for d in sat sun; do
+                    case ",$normalized," in
+                        *",$d,"*) ;;
+                        *) normalized="${normalized:+$normalized,}$d" ;;
+                    esac
+                done
+                ;;
+            all) return 0 ;;
+            mon|tue|wed|thu|fri|sat|sun)
+                case ",$normalized," in
+                    *",$token,"*) ;;
+                    *) normalized="${normalized:+$normalized,}$token" ;;
+                esac
+                ;;
+            *) return 1 ;;
+        esac
+    done
+
+    [ -z "$normalized" ] && return 1
+    echo "$normalized"
+    return 0
+}
+
+# validate_days_spec: 0 on success, 1 on invalid. Just calls expand_days_spec.
+validate_days_spec() {
+    expand_days_spec "$1" >/dev/null 2>&1
+}
+
 start_daemon() {
     # Parse --at and --stop parameters
     START_TIME=""
     STOP_TIME=""
     DISABLE_CCUSAGE=false
     CUSTOM_MESSAGE=""
-    
+    DAYS=""
+
     # Parse parameters
     while [[ $# -gt 1 ]]; do
         case $2 in
@@ -53,11 +142,31 @@ start_daemon() {
                 CUSTOM_MESSAGE="$3"
                 shift 2
                 ;;
+            --days)
+                DAYS="$3"
+                shift 2
+                ;;
             *)
                 shift
                 ;;
         esac
     done
+
+    # Validate and normalize --days to its canonical form (mon,tue,... sorted).
+    if [ -n "$DAYS" ]; then
+        local normalized_days
+        normalized_days="$(expand_days_spec "$DAYS" 2>/dev/null)" || {
+            print_error "Invalid --days value: '$DAYS'"
+            print_error "Examples: --days weekdays | --days mon-fri | --days mon,wed,fri | --days all"
+            return 1
+        }
+        # "all" alias means no filter — clear any leftover days file.
+        if [ "$normalized_days" = "all" ]; then
+            DAYS=""
+        else
+            DAYS="$normalized_days"
+        fi
+    fi
     
     # Process start time
     if [ -n "$START_TIME" ]; then
@@ -122,24 +231,61 @@ start_daemon() {
         # Remove any existing custom message (use default messages)
         rm -f "$MESSAGE_FILE" 2>/dev/null
     fi
+
+    # Process days filter
+    if [ -n "$DAYS" ]; then
+        echo "$DAYS" > "$DAYS_FILE"
+        print_status "Active days: $DAYS"
+    else
+        # No --days given: leave any existing filter in place (so `restart`
+        # without --days keeps prior schedule). Only clear if there's no
+        # current PID — fresh start with no --days means "all days".
+        if [ ! -f "$PID_FILE" ]; then
+            rm -f "$DAYS_FILE" 2>/dev/null
+        fi
+    fi
     
+    # Pre-flight: claude must be available or renewals will silently fail
+    if ! command -v claude &> /dev/null; then
+        print_error "claude CLI not found in PATH"
+        print_error "Install Claude Code: https://www.anthropic.com/claude-code"
+        return 1
+    fi
+
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
             print_error "Daemon is already running with PID $PID"
             return 1
         fi
+        # Stale PID file — daemon crashed or was killed
+        rm -f "$PID_FILE"
     fi
-    
+
     print_status "Starting Claude auto-renewal daemon..."
+
+    # Capture stderr so we can show the real reason if startup fails.
+    # The daemon writes its own logs to $LOG_FILE, so we only redirect
+    # early-boot errors (anything that happens before log_message works,
+    # e.g. missing bash version, syntax error, missing HOME, etc.).
+    local start_stderr
+    start_stderr="$(mktemp -t cc-autorenew-start.XXXXXX 2>/dev/null || echo "${TMPDIR:-/tmp}/cc-autorenew-start.$$")"
+    : > "$start_stderr"
+
     if [ "$DISABLE_CCUSAGE" = true ]; then
-        nohup "$DAEMON_SCRIPT" --disableccusage > /dev/null 2>&1 &
+        nohup "$DAEMON_SCRIPT" --disableccusage > /dev/null 2>> "$start_stderr" &
     else
-        nohup "$DAEMON_SCRIPT" > /dev/null 2>&1 &
+        nohup "$DAEMON_SCRIPT" > /dev/null 2>> "$start_stderr" &
     fi
-    
-    sleep 2
-    
+    local launcher_pid=$!
+
+    # Wait up to 5 seconds for the PID file to appear.
+    local waited=0
+    while [ $waited -lt 5 ] && [ ! -f "$PID_FILE" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
@@ -149,11 +295,26 @@ start_daemon() {
                 print_status "Will begin auto-renewal at: $(date -d "@$START_EPOCH" 2>/dev/null || date -r "$START_EPOCH")"
             fi
             print_status "Logs: $LOG_FILE"
+            rm -f "$start_stderr"
             return 0
         fi
     fi
-    
+
+    # Startup failed — surface the real reason.
     print_error "Failed to start daemon"
+    if [ -s "$start_stderr" ]; then
+        print_error "Daemon output:"
+        sed 's/^/    /' "$start_stderr"
+    fi
+    if [ -f "$LOG_FILE" ]; then
+        print_error "Recent log entries (last 10):"
+        tail -10 "$LOG_FILE" | sed 's/^/    /'
+    fi
+    print_error "Common causes:"
+    print_error "  • claude CLI not installed or not in PATH"
+    print_error "  • permissions issue (chmod +x *.sh)"
+    print_error "  • bash 4.0+ required (run 'bash --version')"
+    rm -f "$start_stderr"
     return 1
 }
 
@@ -516,12 +677,12 @@ status_daemon() {
         print_status "Daemon is not running"
         return 1
     fi
-    
+
     PID=$(cat "$PID_FILE")
-    
+
     if kill -0 "$PID" 2>/dev/null; then
         print_status "Daemon is running with PID $PID"
-        
+
         get_daemon_status
         print_status "Status: $DAEMON_STATUS_TEXT"
         if [ -n "$DAEMON_STATUS_DETAIL" ]; then
@@ -529,7 +690,21 @@ status_daemon() {
                 print_status "$line"
             done
         fi
-        
+
+        # Day filter
+        if [ -f "$DAYS_FILE" ]; then
+            local days_spec
+            days_spec="$(cat "$DAYS_FILE" 2>/dev/null)"
+            if [ -n "$days_spec" ] && [ "$days_spec" != "all" ]; then
+                print_status "Active days: $days_spec"
+            fi
+        fi
+
+        # Custom message
+        if [ -f "$MESSAGE_FILE" ]; then
+            print_status "Custom message: \"$(cat "$MESSAGE_FILE" 2>/dev/null)\""
+        fi
+
         # Show recent activity
         if [ -f "$LOG_FILE" ]; then
             echo ""
@@ -605,10 +780,11 @@ case "$1" in
         echo "  start --at TIME --stop END - Start monitoring at TIME, stop at END"
         echo "  start --disableccusage     - Start daemon without ccusage (clock-based only)"
         echo "  start --message \"text\"     - Use custom message for renewal instead of random greetings"
+        echo "  start --days SPEC          - Limit monitoring to specific days"
         echo "                               Examples: --at '09:00' --stop '17:00'"
-        echo "                                        --at '2025-01-28 09:00' --stop '2025-01-28 17:00'"
         echo "                                        --at '09:00' --stop '17:00' --disableccusage"
         echo "                                        --message 'continue working on the React feature'"
+        echo "                                        --days weekdays | --days mon-fri | --days mon,wed,fri"
         echo "  stop                       - Stop the daemon"
         echo "  restart                    - Restart the daemon"
         echo "  status                     - Show daemon status"
