@@ -317,7 +317,7 @@ calculate_sleep_duration() {
     local minutes_remaining=$(get_minutes_until_reset)
     
     if [ -n "$minutes_remaining" ] && [ "$minutes_remaining" -gt 0 ]; then
-        log_message "Time remaining: $minutes_remaining minutes"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Time remaining: $minutes_remaining minutes" >> "$LOG_FILE"
         
         if [ "$minutes_remaining" -le 5 ]; then
             # Check every 30 seconds when close to reset
