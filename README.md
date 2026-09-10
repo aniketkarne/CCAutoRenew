@@ -2,6 +2,12 @@
 
 > Never miss a Claude Code renewal window again! Automatically maintains your 5-hour usage blocks with optional scheduled start times.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Shellcheck](https://img.shields.io/badge/shellcheck-passing-brightgreen.svg)](.github/workflows/shellcheck.yml)
+[![macOS](https://img.shields.io/badge/macOS-supported-blue.svg)](#-prerequisites)
+[![Linux](https://img.shields.io/badge/Linux-supported-blue.svg)](#-prerequisites)
+[![Bash 4.0+](https://img.shields.io/badge/bash-4.0%2B-blue.svg)](#-prerequisites)
+
 ## 🎯 Problem
 
 Claude Code operates on a 5-hour subscription model that renews from your first message. If you:
@@ -87,13 +93,13 @@ bunx ccusage
 ```bash
 # Clone this repository
 git clone https://github.com/aniketkarne/CCAutoRenew.git
-cd cc-autorenew
+cd CCAutoRenew
 
 # Make all scripts executable
 chmod +x *.sh
 
 # Test your setup
-./test-claude-renewal.sh
+./test-quick.sh
 ```
 
 ## 📖 Usage
@@ -314,14 +320,18 @@ The new comprehensive test includes:
 ## 📁 Project Structure
 
 ```
-cc-autorenew/
+CCAutoRenew/
 ├── claude-daemon-manager.sh      # Main control script
 ├── claude-auto-renew-daemon.sh   # Core daemon process
 ├── claude-auto-renew-advanced.sh # Standalone renewal script
 ├── claude-auto-renew.sh          # Basic renewal script
 ├── setup-claude-cron.sh          # Interactive setup (daemon/cron)
-├── test-start-time-feature.sh    # New comprehensive test suite
-├── reddit.md                     # Reddit post about the project
+├── stop-daemon.sh                # Graceful daemon shutdown
+├── test-claude-renewal.sh        # Legacy comprehensive test suite
+├── test-message-feature.sh       # Custom message feature tests
+├── test-quick.sh                 # Quick validation (< 1 minute)
+├── test-start-time-feature.sh    # Start-time feature test suite
+├── LICENSE                       # MIT license
 └── README.md                     # This file
 ```
 

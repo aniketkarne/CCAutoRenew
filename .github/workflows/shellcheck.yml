@@ -1,0 +1,41 @@
+name: Shellcheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: Shellcheck + bash syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run shellcheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        env:
+          SHELLCHECK_OPTS: --severity=error --shell=bash
+
+      - name: Verify bash syntax
+        run: |
+          set -e
+          for f in *.sh; do
+            echo "Checking syntax: $f"
+            bash -n "$f"
+          done
+
+      - name: Script permissions
+        run: |
+          for f in *.sh; do
+            if [ ! -x "$f" ]; then
+              echo "::error file=$f::Script is not executable"
+              exit 1
+            fi
+          done
+          echo "All scripts are executable"
