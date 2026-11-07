@@ -148,10 +148,15 @@ chmod +x *.sh
 # Stop the daemon
 ./claude-daemon-manager.sh stop
 
-# Restart the daemon (with same start/stop times if previously set)
+# Restart the daemon (everything not named on the command line is kept)
 ./claude-daemon-manager.sh restart
-./claude-daemon-manager.sh restart --at "10:00"  # new start time
+./claude-daemon-manager.sh restart --at "10:00"  # new start time (stop/message/days kept)
 ./claude-daemon-manager.sh restart --at "09:00" --stop "17:00"  # new schedule
+
+# Reset individual settings on restart (empty value = back to default)
+./claude-daemon-manager.sh restart --at "" --stop ""  # drop the window (monitor 24/7)
+./claude-daemon-manager.sh restart --message ""       # back to random greetings
+./claude-daemon-manager.sh restart --days all         # back to every day
 ```
 
 ### macOS Auto-Start With launchd
@@ -174,7 +179,7 @@ For macOS users who want the daemon to start automatically at login:
 ```
 
 Notes:
-- The launch agent triggers `./claude-daemon-manager.sh start` when you log in.
+- The launch agent triggers `./claude-daemon-manager.sh start --keep-config` when you log in, so a schedule configured earlier (start/stop times, custom message, day filter) survives reboots; the arguments baked into the plist at install time override it.
 - It uses the current shell `PATH` when generating the plist, so `claude`, `ccusage`, `npx`, or `bunx` can still be found by launchd.
 - If you move those commands to a different location later, run the install command again to refresh the LaunchAgent.
 
@@ -286,7 +291,7 @@ for the original Q&A this section was written from.
 ./claude-daemon-manager.sh restart  # Still uses the previous custom message
 
 # Clear custom message (return to random greetings)
-./claude-daemon-manager.sh restart  # Without --message flag
+./claude-daemon-manager.sh restart --message ""
 ```
 
 **Why use custom messages?**
@@ -360,6 +365,8 @@ How it interacts with `--at` and `--stop`:
   waking every 5 minutes to ask "is it time yet?".
 
 Filter is persisted across restarts. To clear it, restart with `--days all`.
+A plain `start` (no flags) resets every setting to its default — schedule,
+message, and day filter.
 
 ### 💡 Avoid Session Burning
 
@@ -403,6 +410,9 @@ Run the test suite to verify everything is working:
 # Quick test (< 1 minute)
 ./test-quick.sh
 
+# Schedule persistence + day-rollover regression tests (sandboxed, no claude needed)
+./test-schedule-persistence.sh
+
 # Comprehensive test suite (includes start-time feature)
 ./test-start-time-feature.sh
 
@@ -432,6 +442,7 @@ CCAutoRenew/
 ├── test-claude-renewal.sh        # Legacy comprehensive test suite
 ├── test-message-feature.sh       # Custom message feature tests
 ├── test-quick.sh                 # Quick validation (< 1 minute)
+├── test-schedule-persistence.sh  # Schedule persistence + day-rollover tests
 ├── test-start-time-feature.sh    # Start-time feature test suite
 ├── LICENSE                       # MIT license
 └── README.md                     # This file

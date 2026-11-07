@@ -27,6 +27,16 @@ cleanup() {
 # Set up signal handlers
 trap cleanup SIGTERM SIGINT
 
+# Interruptible sleep: bash defers a trapped signal until the current
+# foreground child exits, so a plain `sleep 3600` would swallow SIGTERM for
+# up to an hour and every stop would end in kill -9. `wait` returns the
+# moment a trapped signal arrives, so background the sleep and wait on it.
+sleep_interruptible() {
+    sleep "$1" &
+    wait $! 2>/dev/null
+    return 0
+}
+
 # Function to check if we're in the active monitoring window
 is_monitoring_active() {
     local current_epoch=$(date +%s)
@@ -191,6 +201,22 @@ schedule_next_day_restart() {
     return 0
 }
 
+# End-of-day rollover: move the window to tomorrow, then skip past any
+# inactive days so an off-day doesn't wake every 5 minutes asking "is it
+# time yet?". The day check must look at the NEW start day — checking the
+# day that just ended (always active, or we wouldn't have been monitoring)
+# never skips anything, and the first off-day of every stretch gets the
+# 5-minute wakeups this is supposed to prevent.
+rollover_to_next_day() {
+    schedule_next_day_restart || return 1
+    if [ -f "$DAYS_FILE" ] && [ -f "$START_TIME_FILE" ]; then
+        if ! is_epoch_on_active_day "$(cat "$START_TIME_FILE")"; then
+            advance_to_next_active_day
+        fi
+    fi
+    return 0
+}
+
 # Function to get time until start
 get_time_until_start() {
     if [ ! -f "$START_TIME_FILE" ]; then
@@ -288,7 +314,7 @@ start_claude_session() {
     # Wait up to 10 seconds
     local count=0
     while kill -0 $pid 2>/dev/null && [ $count -lt 10 ]; do
-        sleep 1
+        sleep_interruptible 1
         ((count++))
     done
     
@@ -422,14 +448,7 @@ main() {
         # Check if we should schedule next day restart first
         if should_restart_tomorrow; then
             log_message "🛑 Stop time reached. Scheduling restart for tomorrow..."
-            schedule_next_day_restart
-
-            # If a day filter is set and tomorrow isn't an active day, skip
-            # ahead to the next active day so we don't fire every 5 min on
-            # off-days asking "is it time yet?".
-            if [ -f "$DAYS_FILE" ] && ! is_day_active; then
-                advance_to_next_active_day
-            fi
+            rollover_to_next_day
 
             # Wait for tomorrow's (or next active day's) start time
             while ! is_monitoring_active; do
@@ -439,10 +458,10 @@ main() {
                 
                 if [ "$hours" -gt 0 ]; then
                     log_message "⏰ Waiting for tomorrow's start time (${hours}h ${minutes}m remaining)..."
-                    sleep 3600  # Check every hour when waiting for tomorrow
+                    sleep_interruptible 3600  # Check every hour when waiting for tomorrow
                 else
                     log_message "⏰ Waiting for start time (${minutes}m remaining)..."
-                    sleep 300   # Check every 5 minutes when close
+                    sleep_interruptible 300   # Check every 5 minutes when close
                 fi
             done
             
@@ -463,26 +482,26 @@ main() {
                     # Before start time
                     if [ "$hours" -gt 0 ]; then
                         log_message "⏰ Waiting for start time (${hours}h ${minutes}m remaining)..."
-                        sleep 300  # Check every 5 minutes when waiting
+                        sleep_interruptible 300  # Check every 5 minutes when waiting
                     elif [ "$minutes" -gt 2 ]; then
                         log_message "⏰ Waiting for start time (${minutes}m ${seconds}s remaining)..."
-                        sleep 60   # Check every minute when close
+                        sleep_interruptible 60   # Check every minute when close
                     elif [ "$time_until_start" -gt 10 ]; then
                         log_message "⏰ Waiting for start time (${minutes}m ${seconds}s remaining)..."
-                        sleep 10   # Check every 10 seconds when very close
+                        sleep_interruptible 10   # Check every 10 seconds when very close
                     else
                         log_message "⏰ Waiting for start time (${seconds}s remaining)..."
-                        sleep 2    # Check every 2 seconds when imminent
+                        sleep_interruptible 2    # Check every 2 seconds when imminent
                     fi
                 else
                     # Past stop time, waiting for tomorrow
                     log_message "🛑 Past stop time, waiting for tomorrow..."
-                    sleep 300
+                    sleep_interruptible 300
                 fi
             else
                 # No start time but inactive - must be past stop time
                 log_message "🛑 Past stop time, no restart scheduled..."
-                sleep 300
+                sleep_interruptible 300
             fi
             continue
         fi
@@ -546,16 +565,16 @@ main() {
         # Perform renewal if needed
         if [ "$should_renew" = true ]; then
             # Wait a bit to ensure we're in the renewal window
-            sleep 60
+            sleep_interruptible 60
             
             # Try to start session
             if start_claude_session; then
                 log_message "Renewal successful!"
                 # Sleep for 5 minutes after successful renewal
-                sleep 300
+                sleep_interruptible 300
             else
                 log_message "Renewal failed, will retry in 1 minute"
-                sleep 60
+                sleep_interruptible 60
             fi
         fi
         
@@ -564,22 +583,25 @@ main() {
         log_message "Next check in $((sleep_duration / 60)) minutes"
         
         # Sleep until next check
-        sleep "$sleep_duration"
+        sleep_interruptible "$sleep_duration"
     done
 }
 
-# Parse command line arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --disableccusage)
-            DISABLE_CCUSAGE=true
-            shift
-            ;;
-        *)
-            shift
-            ;;
-    esac
-done
+# Start the daemon (skipped when the script is sourced, e.g. by tests)
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    # Parse command line arguments
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --disableccusage)
+                DISABLE_CCUSAGE=true
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
 
-# Start the daemon
-main
+    # Start the daemon
+    main
+fi
