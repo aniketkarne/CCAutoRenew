@@ -94,7 +94,13 @@ expand_days_spec() {
                     esac
                 done
                 ;;
-            all) return 0 ;;
+            all)
+                # "all" means no restriction. Surface it so the caller can
+                # tell an explicit `--days all` (clear the filter) apart from
+                # a missing --days (keep whatever is configured).
+                echo "all"
+                return 0
+                ;;
             mon|tue|wed|thu|fri|sat|sun)
                 case ",$normalized," in
                     *",$token,"*) ;;
@@ -122,16 +128,26 @@ start_daemon() {
     DISABLE_CCUSAGE=false
     CUSTOM_MESSAGE=""
     DAYS=""
+    local saw_start=false saw_stop=false saw_message=false saw_days=false
+
+    # --keep-config (set by `restart` and the launchd bootstrap): settings
+    # not named on this invocation stay exactly as they are. Without it,
+    # unnamed settings reset to defaults (fresh start).
+    if [ -z "${KEEP_CONFIG:-}" ]; then
+        KEEP_CONFIG=false
+    fi
 
     # Parse parameters
     while [[ $# -gt 1 ]]; do
         case $2 in
             --at)
                 START_TIME="$3"
+                saw_start=true
                 shift 2
                 ;;
             --stop)
                 STOP_TIME="$3"
+                saw_stop=true
                 shift 2
                 ;;
             --disableccusage)
@@ -140,11 +156,17 @@ start_daemon() {
                 ;;
             --message)
                 CUSTOM_MESSAGE="$3"
+                saw_message=true
                 shift 2
                 ;;
             --days)
                 DAYS="$3"
+                saw_days=true
                 shift 2
+                ;;
+            --keep-config)
+                KEEP_CONFIG=true
+                shift
                 ;;
             *)
                 shift
@@ -169,11 +191,19 @@ start_daemon() {
     fi
     
     # Process start time
-    if [ -n "$START_TIME" ]; then
+    if [ "$saw_start" = true ] && [ -z "$START_TIME" ]; then
+        # Explicit empty --at: drop the window (monitor immediately)
+        rm -f "$START_TIME_FILE" 2>/dev/null
+        START_EPOCH=""
+    elif [ -n "$START_TIME" ]; then
         # Validate and convert start time to epoch
         if [[ "$START_TIME" =~ ^[0-9]{2}:[0-9]{2}$ ]]; then
             # Format: "HH:MM" - assume today
             START_TIME="$(date '+%Y-%m-%d') $START_TIME:00"
+        elif [[ "$START_TIME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]+[0-9]{2}:[0-9]{2}$ ]]; then
+            # BSD date's strptime needs explicit seconds; the documented
+            # 'YYYY-MM-DD HH:MM' form is written without them.
+            START_TIME="$START_TIME:00"
         fi
         
         # Convert to epoch timestamp
@@ -187,17 +217,30 @@ start_daemon() {
         # Store start time
         echo "$START_EPOCH" > "$START_TIME_FILE"
         print_status "Daemon will start monitoring at: $(date -d "@$START_EPOCH" 2>/dev/null || date -r "$START_EPOCH")"
+    elif [ "$KEEP_CONFIG" = true ] && [ -f "$START_TIME_FILE" ]; then
+        # Not named on this invocation: keep the configured start time
+        START_EPOCH=$(cat "$START_TIME_FILE")
+        print_status "Keeping scheduled start time: $(date -d "@$START_EPOCH" 2>/dev/null || date -r "$START_EPOCH")"
     else
         # Remove any existing start time (start immediately)
         rm -f "$START_TIME_FILE" 2>/dev/null
+        START_EPOCH=""
     fi
     
     # Process stop time
-    if [ -n "$STOP_TIME" ]; then
+    if [ "$saw_stop" = true ] && [ -z "$STOP_TIME" ]; then
+        # Explicit empty --stop: drop the window (monitor continuously)
+        rm -f "$STOP_TIME_FILE" 2>/dev/null
+        STOP_EPOCH=""
+    elif [ -n "$STOP_TIME" ]; then
         # Validate and convert stop time to epoch
         if [[ "$STOP_TIME" =~ ^[0-9]{2}:[0-9]{2}$ ]]; then
             # Format: "HH:MM" - assume today
             STOP_TIME="$(date '+%Y-%m-%d') $STOP_TIME:00"
+        elif [[ "$STOP_TIME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]+[0-9]{2}:[0-9]{2}$ ]]; then
+            # BSD date's strptime needs explicit seconds; the documented
+            # 'YYYY-MM-DD HH:MM' form is written without them.
+            STOP_TIME="$STOP_TIME:00"
         fi
         
         # Convert to epoch timestamp
@@ -208,25 +251,36 @@ start_daemon() {
             return 1
         fi
         
-        # Validate that stop time is after start time
-        if [ -n "$START_EPOCH" ] && [ "$STOP_EPOCH" -le "$START_EPOCH" ]; then
-            print_error "Stop time must be after start time"
-            return 1
-        fi
-        
         # Store stop time
         echo "$STOP_EPOCH" > "$STOP_TIME_FILE"
         print_status "Daemon will stop monitoring at: $(date -d "@$STOP_EPOCH" 2>/dev/null || date -r "$STOP_EPOCH")"
+    elif [ "$KEEP_CONFIG" = true ] && [ -f "$STOP_TIME_FILE" ]; then
+        # Not named on this invocation: keep the configured stop time
+        STOP_EPOCH=$(cat "$STOP_TIME_FILE")
+        print_status "Keeping scheduled stop time: $(date -d "@$STOP_EPOCH" 2>/dev/null || date -r "$STOP_EPOCH")"
     else
         # Remove any existing stop time
         rm -f "$STOP_TIME_FILE" 2>/dev/null
+        STOP_EPOCH=""
+    fi
+    
+    # Stop must come after start, whether each was just set or kept
+    if [ -n "$START_EPOCH" ] && [ -n "$STOP_EPOCH" ] && [ "$STOP_EPOCH" -le "$START_EPOCH" ]; then
+        print_error "Stop time must be after start time"
+        return 1
     fi
     
     # Process custom message
-    if [ -n "$CUSTOM_MESSAGE" ]; then
+    if [ "$saw_message" = true ] && [ -z "$CUSTOM_MESSAGE" ]; then
+        # Explicit empty --message: back to random greetings
+        rm -f "$MESSAGE_FILE" 2>/dev/null
+    elif [ -n "$CUSTOM_MESSAGE" ]; then
         # Store custom message
         echo "$CUSTOM_MESSAGE" > "$MESSAGE_FILE"
         print_status "Using custom renewal message: \"$CUSTOM_MESSAGE\""
+    elif [ "$KEEP_CONFIG" = true ] && [ -f "$MESSAGE_FILE" ]; then
+        # Not named on this invocation: keep the configured message
+        print_status "Keeping custom renewal message: \"$(cat "$MESSAGE_FILE" 2>/dev/null)\""
     else
         # Remove any existing custom message (use default messages)
         rm -f "$MESSAGE_FILE" 2>/dev/null
@@ -236,13 +290,15 @@ start_daemon() {
     if [ -n "$DAYS" ]; then
         echo "$DAYS" > "$DAYS_FILE"
         print_status "Active days: $DAYS"
+    elif [ "$saw_days" = true ]; then
+        # Explicit `--days all` (or empty): back to every day
+        rm -f "$DAYS_FILE" 2>/dev/null
+        print_status "Active days: all (filter cleared)"
+    elif [ "$KEEP_CONFIG" = true ] && [ -f "$DAYS_FILE" ]; then
+        # Not named on this invocation: keep the configured filter
+        print_status "Keeping active days: $(cat "$DAYS_FILE" 2>/dev/null)"
     else
-        # No --days given: leave any existing filter in place (so `restart`
-        # without --days keeps prior schedule). Only clear if there's no
-        # current PID — fresh start with no --days means "all days".
-        if [ ! -f "$PID_FILE" ]; then
-            rm -f "$DAYS_FILE" 2>/dev/null
-        fi
+        rm -f "$DAYS_FILE" 2>/dev/null
     fi
     
     # Pre-flight: claude must be available or renewals will silently fail
@@ -758,6 +814,8 @@ case "$1" in
     restart)
         stop_daemon
         sleep 2
+        # Restart keeps every setting not named on the command line
+        KEEP_CONFIG=true
         start_daemon "$@"
         ;;
     status)
@@ -786,7 +844,12 @@ case "$1" in
         echo "                                        --message 'continue working on the React feature'"
         echo "                                        --days weekdays | --days mon-fri | --days mon,wed,fri"
         echo "  stop                       - Stop the daemon"
-        echo "  restart                    - Restart the daemon"
+        echo "  restart                    - Restart the daemon, keeping every setting"
+        echo "                               not named on the command line"
+        echo "  restart --at TIME          - Restart with a new start time (stop/message/days kept)"
+        echo "  restart --at '' --stop ''  - Drop the start/stop window (monitor 24/7)"
+        echo "  restart --message ''       - Clear the custom message (back to greetings)"
+        echo "  restart --days all         - Clear the day filter (back to every day)"
         echo "  status                     - Show daemon status"
         echo "  dash                       - Live dashboard with updates every minute"
         echo "  logs                       - Show recent logs (use 'logs -f' to follow)"

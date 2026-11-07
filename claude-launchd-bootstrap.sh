@@ -20,4 +20,6 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 fi
 
-exec "$DAEMON_MANAGER" start "$@"
+# Start with what's already configured (schedule, message, day filter all
+# survive a reboot); the plist's own arguments, if any, override it.
+exec "$DAEMON_MANAGER" start --keep-config "$@"
