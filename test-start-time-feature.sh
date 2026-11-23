@@ -3,6 +3,10 @@
 # Comprehensive Test Script for CC AutoRenew with Start-Time Feature
 # Tests all components including new start-time functionality
 
+# Sandbox helpers: all daemon state lives under $HOME, so tests run inside a
+# throwaway HOME and never touch (or kill) the user's real daemon.
+source "$(dirname "$0")/test-lib.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -128,7 +132,8 @@ test_start_time_parsing() {
     print_test "Testing start time parsing and validation"
     
     # Test invalid time format
-    if "$DAEMON_MANAGER" start --at "invalid" 2>&1 | grep -qE "Invalid (start |stop )?time format"; then
+    invalid_out="$("$DAEMON_MANAGER" start --at "invalid" 2>&1)"
+    if echo "$invalid_out" | grep -qE "Invalid (start |stop )?time format"; then
         print_success "Invalid time format correctly rejected"
     else
         print_fail "Invalid time format not properly handled"
@@ -139,7 +144,8 @@ test_start_time_parsing() {
     if [ -n "$future_time" ]; then
         print_info "Testing with future time: $future_time"
         # This should succeed but we'll stop it immediately
-        if "$DAEMON_MANAGER" start --at "$future_time" 2>&1 | grep -q "Daemon started successfully"; then
+        future_out="$("$DAEMON_MANAGER" start --at "$future_time" 2>&1)"
+        if echo "$future_out" | grep -q "Daemon started successfully"; then
             print_success "Valid future time format accepted"
             # Stop the daemon
             "$DAEMON_MANAGER" stop >/dev/null 2>&1
@@ -369,6 +375,11 @@ main() {
     # Run all tests
     test_basic_setup
     test_dependencies
+
+    # Everything below starts real daemons and asserts on state files under
+    # $HOME. Move into the sandbox first (also handles interruption cleanup).
+    sandbox_init
+
     test_daemon_manager_basic
     test_start_time_parsing
     test_start_time_files
@@ -400,8 +411,7 @@ main() {
     fi
 }
 
-# Handle Ctrl+C gracefully
-trap 'echo -e "\n${YELLOW}Test interrupted. Cleaning up...${NC}"; "$DAEMON_MANAGER" stop >/dev/null 2>&1; exit 1' INT
+# Interruption cleanup is handled by test-lib.sh (sandbox_cleanup trap)
 
 # Run tests
 main "$@" 
