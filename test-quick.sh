@@ -3,6 +3,10 @@
 # Quick Test Script for CC AutoRenew
 # Performs basic validation of all components in under 1 minute
 
+# Sandbox helpers: all daemon state lives under $HOME, so tests run inside a
+# throwaway HOME and never touch (or kill) the user's real daemon.
+source "$(dirname "$0")/test-lib.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -69,6 +73,10 @@ else
     print_fail "ccusage not available via any method"
 fi
 
+# Everything below talks to the daemon manager, which writes state under
+# $HOME and can start real daemons. Move into the sandbox first.
+sandbox_init
+
 # Test 3: Test daemon manager help
 print_test "Testing daemon manager"
 if ./claude-daemon-manager.sh --help 2>&1 | grep -q "Usage"; then
@@ -123,7 +131,7 @@ fi
 
 # Test 8: Test setup script options
 print_test "Testing setup script"
-if echo "3" | timeout 5s ./setup-claude-cron.sh 2>&1 | grep -q "Invalid choice"; then
+if echo "3" | run_with_timeout 5 ./setup-claude-cron.sh 2>&1 | grep -q "Invalid choice"; then
     print_pass "Setup script handles invalid choices"
 else
     # Fallback: check if script has proper content
@@ -136,12 +144,17 @@ fi
 
 # Test 9: Test --days parsing (issue #17: day-of-week filter)
 print_test "Testing --days filter parsing"
-# Run with a sandboxed HOME so we don't pollute the user's state
-DAYS_TEST_HOME="$(mktemp -d -t cc-autorenew-daytest-XXXXXX)"
-export HOME="$DAYS_TEST_HOME"
+
+# Each case starts from a stopped daemon and captures the manager's full
+# output before asserting on it: piping a `start` through `grep -q` closes the
+# pipe on the first match and SIGPIPE-kills the manager mid-start, so what
+# actually got started depends on grep's timing. sandbox_kill_daemon between
+# cases keeps the start path identical for every assertion.
+sandbox_kill_daemon
+days_out="$(./claude-daemon-manager.sh start --days "weekdays" 2>&1)"
 
 # Valid: weekdays expands to canonical form
-if ./claude-daemon-manager.sh start --days "weekdays" 2>&1 | grep -q "Active days: mon,tue,wed,thu,fri"; then
+if echo "$days_out" | grep -q "Active days: mon,tue,wed,thu,fri"; then
     if [ "$(cat "$HOME/.claude-auto-renew-days" 2>/dev/null)" = "mon,tue,wed,thu,fri" ]; then
         print_pass "--days weekdays expands correctly"
     else
@@ -150,47 +163,52 @@ if ./claude-daemon-manager.sh start --days "weekdays" 2>&1 | grep -q "Active day
 else
     print_fail "--days weekdays not handled correctly"
 fi
+sandbox_kill_daemon
 
 # Valid: range
-if ./claude-daemon-manager.sh start --days "sat-sun" 2>&1 | grep -q "Active days: sat,sun"; then
+days_out="$(./claude-daemon-manager.sh start --days "sat-sun" 2>&1)"
+if echo "$days_out" | grep -q "Active days: sat,sun"; then
     print_pass "--days sat-sun range handled"
 else
     print_fail "--days sat-sun range not handled"
 fi
+sandbox_kill_daemon
 
 # Valid: mixed case/whitespace, normalizes to canonical
-if ./claude-daemon-manager.sh start --days "mon, Wed ,fri" 2>&1 | grep -q "Active days: mon,wed,fri"; then
+days_out="$(./claude-daemon-manager.sh start --days "mon, Wed ,fri" 2>&1)"
+if echo "$days_out" | grep -q "Active days: mon,wed,fri"; then
     print_pass "--days normalizes case and whitespace"
 else
     print_fail "--days normalization failed"
 fi
+sandbox_kill_daemon
 
 # Invalid: garbage rejected
-if ./claude-daemon-manager.sh start --days "funday" 2>&1 | grep -q "Invalid --days value"; then
+days_out="$(./claude-daemon-manager.sh start --days "funday" 2>&1)"
+if echo "$days_out" | grep -q "Invalid --days value"; then
     print_pass "--days rejects invalid value"
 else
     print_fail "--days should reject 'funday'"
 fi
 
 # Invalid: backwards range rejected
-if ./claude-daemon-manager.sh start --days "fri-mon" 2>&1 | grep -q "Invalid --days value"; then
+days_out="$(./claude-daemon-manager.sh start --days "fri-mon" 2>&1)"
+if echo "$days_out" | grep -q "Invalid --days value"; then
     print_pass "--days rejects backwards range"
 else
     print_fail "--days should reject backwards range"
 fi
 
-# Valid: 'all' alias clears the filter (no DAYS_FILE written)
-DAYS_BEFORE="$(cat "$HOME/.claude-auto-renew-days" 2>/dev/null)"
-./claude-daemon-manager.sh start --days "all" >/dev/null 2>&1 || true
+# Valid: 'all' alias clears the filter on a stopped daemon (no DAYS_FILE left)
+sandbox_kill_daemon
+./claude-daemon-manager.sh start --days "all" >/dev/null 2>&1
 DAYS_AFTER="$(cat "$HOME/.claude-auto-renew-days" 2>/dev/null)"
 if [ -z "$DAYS_AFTER" ] || [ "$DAYS_AFTER" = "all" ]; then
     print_pass "--days all clears the filter"
 else
     print_fail "--days all: expected empty or 'all', got '$DAYS_AFTER'"
 fi
-
-unset HOME
-rm -rf "$DAYS_TEST_HOME"
+sandbox_kill_daemon
 
 # Summary
 echo ""

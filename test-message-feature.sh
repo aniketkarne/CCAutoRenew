@@ -2,6 +2,12 @@
 
 # Test script for the new --message feature
 
+# Sandbox helpers: the manager writes state under $HOME and the daemon runs
+# for real, so tests run inside a throwaway HOME and never touch (or kill)
+# the user's live daemon or its message config.
+source "$(dirname "$0")/test-lib.sh"
+sandbox_init
+
 echo "Testing Claude Auto-Renewal Custom Message Feature"
 echo "=================================================="
 echo ""
@@ -11,6 +17,8 @@ GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+
+TESTS_FAILED=0
 
 print_test() {
     echo -e "${YELLOW}[TEST]${NC} $1"
@@ -22,6 +30,7 @@ print_success() {
 
 print_error() {
     echo -e "${RED}[✗]${NC} $1"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
 }
 
 # Test 1: Check that the daemon manager accepts --message parameter
@@ -109,14 +118,21 @@ sleep 2
 echo ""
 echo "=================================================="
 echo "Test Summary:"
-echo "- Custom message parameter is working correctly"
-echo "- Message file is created and removed as expected"
-echo "- Daemon properly logs custom message usage"
-echo "- Multiple message changes work correctly"
-echo ""
-print_success "All tests passed! The --message feature is ready to use."
+if [ "$TESTS_FAILED" -eq 0 ]; then
+    echo "- Custom message parameter is working correctly"
+    echo "- Message file is created and removed as expected"
+    echo "- Daemon properly logs custom message usage"
+    echo "- Multiple message changes work correctly"
+    echo ""
+    print_success "All tests passed! The --message feature is ready to use."
+else
+    echo ""
+    print_error "$TESTS_FAILED check(s) failed - see [✗] lines above."
+fi
 echo ""
 echo "Example usage:"
 echo "  ./claude-daemon-manager.sh start --message \"continue working on the React feature\""
 echo "  ./claude-daemon-manager.sh start --at \"09:00\" --message \"resume our Python project\""
 echo ""
+
+exit $((TESTS_FAILED > 0))

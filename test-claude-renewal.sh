@@ -3,6 +3,10 @@
 # Comprehensive Claude Renewal Test Script (Legacy)
 # Tests all aspects of the Claude auto-renewal system
 
+# Sandbox helpers: all daemon state lives under $HOME, so tests run inside a
+# throwaway HOME and never touch (or kill) the user's real daemon or logs.
+source "$(dirname "$0")/test-lib.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -90,7 +94,7 @@ test_dependencies() {
         print_pass "Claude CLI available"
         
         # Test claude command works
-        if echo "test" | timeout 5s claude --help &> /dev/null; then
+        if echo "test" | run_with_timeout 5 claude --help &> /dev/null; then
             print_pass "Claude CLI responds to help command"
         else
             print_warning "Claude CLI doesn't respond to help (may need authentication)"
@@ -106,7 +110,7 @@ test_dependencies() {
         print_pass "bunx available for ccusage"
         
         # Test bunx ccusage
-        if timeout 10s bunx ccusage --help &> /dev/null; then
+        if run_with_timeout 10 bunx ccusage --help &> /dev/null; then
             print_pass "bunx ccusage works"
         else
             print_warning "bunx ccusage may need first-time setup"
@@ -204,7 +208,8 @@ test_daemon_manager() {
     fi
     
     # Test invalid parameters
-    if "$DAEMON_MANAGER" start --at "invalid" 2>&1 | grep -q "Invalid"; then
+    invalid_out="$("$DAEMON_MANAGER" start --at "invalid" 2>&1)"
+    if echo "$invalid_out" | grep -q "Invalid"; then
         print_pass "Daemon manager validates start time parameters"
     else
         print_fail "Daemon manager doesn't validate parameters properly"
@@ -359,13 +364,16 @@ test_error_handling() {
     
     rmdir "$readonly_dir" 2>/dev/null
     
-    # Test daemon behavior with existing PID file
-    echo "99999" > "$HOME/.claude-auto-renew-daemon.pid"
+    # Test daemon behavior with existing PID file. Use this script's own PID:
+    # it is guaranteed alive, so the manager must refuse with "already
+    # running" instead of treating the file as stale and starting a daemon.
+    echo "$$" > "$HOME/.claude-auto-renew-daemon.pid"
     
-    if "$DAEMON_MANAGER" start 2>&1 | grep -q "already running\|stale"; then
+    pidfile_out="$("$DAEMON_MANAGER" start 2>&1)"
+    if echo "$pidfile_out" | grep -q "already running"; then
         print_pass "Daemon handles existing PID file"
     else
-        print_warning "Daemon PID file handling unclear"
+        print_fail "Daemon should refuse to start with a live PID in the PID file"
     fi
     
     rm -f "$HOME/.claude-auto-renew-daemon.pid"
@@ -426,6 +434,11 @@ main() {
     # Run all tests
     test_environment
     test_dependencies
+
+    # Everything below starts real daemons and asserts on state files under
+    # $HOME. Move into the sandbox first (also handles interruption cleanup).
+    sandbox_init
+
     test_basic_script
     test_advanced_script
     test_daemon_manager
@@ -446,7 +459,7 @@ main() {
     echo -e "${GREEN}Passed:${NC} $TESTS_PASSED"
     echo -e "${RED}Failed:${NC} $TESTS_FAILED"
     
-    local pass_rate=$((TESTS_PASSED * 100 / TESTS_TOTAL))
+    local pass_rate=$((TESTS_PASSED * 100 / (TESTS_PASSED + TESTS_FAILED)))
     echo -e "Pass Rate: ${BLUE}$pass_rate%${NC}"
     
     if [ $TESTS_FAILED -eq 0 ]; then
@@ -471,8 +484,7 @@ main() {
     fi
 }
 
-# Handle interruption gracefully
-trap 'echo -e "\n${YELLOW}Tests interrupted. Cleaning up...${NC}"; cleanup_tests; exit 1' INT TERM
+# Interruption cleanup is handled by test-lib.sh (sandbox_cleanup trap)
 
 # Run the tests
 main "$@" 
